@@ -2,7 +2,7 @@
 
 Target Task
 
-- Small Real Sample 
+- Small Real Sample Set 
 - Severe Class Imbalance Sample Set
 - Class Conditional Generation
 
