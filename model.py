@@ -312,8 +312,12 @@ def train(model_path):
     generator_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope='generator')
     gen_l2_regularizer = tf.add_n([tf.nn.l2_loss(v) for v in generator_vars if 'bias' not in v.name])
     weight_decay = 1e-5
-    gen_loss = gen_ls_loss + weight_decay * gen_l2_regularizer
+    
+    gen_loss = gen_ls_loss 
 
+    if use_g_weight_decay is True:
+        gen_loss = gen_loss + weight_decay * gen_l2_regularizer
+        
     disc_optimizer = tf.train.RMSPropOptimizer(learning_rate=LR).minimize(disc_loss, var_list=disc_vars)
     gen_optimizer = tf.train.RMSPropOptimizer(learning_rate=LR).minimize(gen_loss, var_list=generator_vars)
 
@@ -493,6 +497,7 @@ if __name__ == '__main__':
     num_channel = 3
     use_gray_scale = True
     use_label_mix = False
+    use_g_weight_decay = False
     num_samples_per_class = 500
 
     if use_gray_scale is True:
