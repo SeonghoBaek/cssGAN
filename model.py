@@ -107,10 +107,10 @@ def generator(latent, category, activation='swish', scope='generator_network', n
 
         l = tf.concat([latent, category], axis=-1)
         print(' Concat category: ' + str(l.get_shape().as_list()))
-        l = layers.fc(l, 6 * 6 * unit_block_depth * 4, non_linear_fn=None, scope='fc1', use_bias=False)
+        l = layers.fc(l, 6 * 6 * unit_block_depth, non_linear_fn=None, scope='fc1', use_bias=False)
         print(' FC1: ' + str(l.get_shape().as_list()))
 
-        l = tf.reshape(l, shape=[-1, 6, 6, unit_block_depth * 4])
+        l = tf.reshape(l, shape=[-1, 6, 6, unit_block_depth])
 
         # Init Stage. Coordinated convolution: Embed explicit positional information
         block_depth = unit_block_depth * 8
@@ -137,7 +137,7 @@ def generator(latent, category, activation='swish', scope='generator_network', n
                                              norm=norm, b_train=b_train, scope='bt_block_' + str(i))
 
         # Transform to input channels
-        l = layers.conv(l, scope='last', filter_dims=[3, 3, num_channel], stride_dims=[1, 1],
+        l = layers.conv(l, scope='last', filter_dims=[7, 7, num_channel], stride_dims=[1, 1],
                         non_linear_fn=tf.nn.tanh,
                         bias=False)
 
@@ -167,7 +167,7 @@ def discriminator(x, category, activation='relu', scope='discriminator_network',
         l = tf.concat([x, cat * tf.ones([b, h, w, num_class])], -1)
         print(scope + 'Concat Input: ' + str(l.get_shape().as_list()))
 
-        l = layers.conv(l, scope='init', filter_dims=[3, 3, block_depth], stride_dims=[1, 1],
+        l = layers.conv(l, scope='init', filter_dims=[7, 7, block_depth], stride_dims=[1, 1],
                         non_linear_fn=None, bias=False, padding='SAME')
         l = act_func(l)
 
@@ -186,7 +186,7 @@ def discriminator(x, category, activation='relu', scope='discriminator_network',
 
         last_layer = l
         logit = layers.conv(last_layer, scope='conv_pred', filter_dims=[3, 3, 1], stride_dims=[1, 1],
-                            non_linear_fn=None, bias=False)
+                            non_linear_fn=tf.nn.sigmoid, bias=False)
 
         print('Discriminator Logit Dims: ' + str(logit.get_shape().as_list()))
 
@@ -302,22 +302,20 @@ def train(model_path):
     grad_loss = get_gradient_loss(X, fake_X)
     feature_loss = get_feature_matching_loss(feature_real, feature_fake, type='l2')
 
-    label_smooth_real = tf.ones_like(logit_real) - 0.2 + tf.random_uniform([], minval=0.0, maxval=0.4, dtype=tf.float32)
-    disc_loss = get_discriminator_loss(logit_real, label_smooth_real, type='ls') + \
-                get_discriminator_loss(logit_fake, tf.zeros_like(logit_fake), type='ls')
+    label_smooth_real = tf.ones_like(logit_real) - tf.random_uniform([], minval=0.0, maxval=0.2, dtype=tf.float32)
+    disc_loss = 0.5 * get_discriminator_loss(logit_real, label_smooth_real, type='ls') + \
+                0.5 * get_discriminator_loss(logit_fake, tf.zeros_like(logit_fake), type='ls')
 
-    gen_ls_loss = get_discriminator_loss(logit_fake, tf.ones_like(logit_fake), type='ls')
+    gen_ls_loss = feature_loss + 0.5 * get_discriminator_loss(logit_fake, tf.ones_like(logit_fake), type='ls')
     disc_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope='discriminator')
-
     generator_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope='generator')
-    gen_l2_regularizer = tf.add_n([tf.nn.l2_loss(v) for v in generator_vars if 'bias' not in v.name])
     weight_decay = 1e-5
-    
     gen_loss = gen_ls_loss 
 
     if use_g_weight_decay is True:
+        gen_l2_regularizer = tf.add_n([tf.nn.l2_loss(v) for v in generator_vars if 'bias' not in v.name])
         gen_loss = gen_loss + weight_decay * gen_l2_regularizer
-        
+
     disc_optimizer = tf.train.RMSPropOptimizer(learning_rate=LR).minimize(disc_loss, var_list=disc_vars)
     gen_optimizer = tf.train.RMSPropOptimizer(learning_rate=LR).minimize(gen_loss, var_list=generator_vars)
 
@@ -497,8 +495,8 @@ if __name__ == '__main__':
     num_channel = 3
     use_gray_scale = True
     use_label_mix = False
-    use_g_weight_decay = False
     num_samples_per_class = 500
+    use_g_weight_decay = False
 
     if use_gray_scale is True:
         num_channel = 1
