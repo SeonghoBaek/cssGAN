@@ -1,5 +1,11 @@
-import tensorflow as tf
+# ==============================================================================
+# Author: Seongho Baek
+# Contact: seonghobaek@gmail.com
+#
+# ==============================================================================
 
+import tensorflow as tf
+import numpy as np
 
 def lstm_network(input, lstm_hidden_size_layer=64,
                  lstm_latent_dim=16, lstm_num_layers=2, forget_bias=1.0, scope='lstm_network'):
@@ -95,15 +101,15 @@ def fc(input_data, out_dim, non_linear_fn=None, initial_value=None, use_bias=Tru
         return activation
 
 
-def batch_norm(x, b_train, scope, decay=0.999, epsilon=1e-3):
-    with tf.variable_scope(scope):
+def batch_norm(x, b_train, scope, reuse=False):
+    with tf.variable_scope(scope,  reuse=tf.AUTO_REUSE):
         n_out = x.get_shape().as_list()[-1]
 
         beta = tf.get_variable('beta', initializer=tf.constant(0.0, shape=[n_out]))
         gamma = tf.get_variable('gamma', initializer=tf.constant(1.0, shape=[n_out]))
 
         batch_mean, batch_var = tf.nn.moments(x, [0], name='moments')
-        ema = tf.train.ExponentialMovingAverage(decay=decay)
+        ema = tf.train.ExponentialMovingAverage(decay=0.9)
 
         def mean_var_with_update():
             ema_apply_op = ema.apply([batch_mean, batch_var])
@@ -113,13 +119,13 @@ def batch_norm(x, b_train, scope, decay=0.999, epsilon=1e-3):
         mean, var = tf.cond(b_train,
                             mean_var_with_update,
                             lambda: (ema.average(batch_mean), ema.average(batch_var)))
-        normed = tf.nn.batch_normalization(x, mean, var, beta, gamma, epsilon)
+        normed = tf.nn.batch_normalization(x, mean, var, beta, gamma, 1e-3)
 
         return normed
 
 
 def coord_conv(input, scope, filter_dims, stride_dims, padding='SAME',
-         non_linear_fn=tf.nn.relu, dilation=[1, 1, 1, 1], bias=False, sn=False):
+         non_linear_fn=tf.nn.relu, dilation=[1, 1, 1, 1], bias=True, sn=False):
     input_dims = input.get_shape().as_list()
     batch_size, height, width, channels = input_dims
 
@@ -153,7 +159,7 @@ def coord_conv(input, scope, filter_dims, stride_dims, padding='SAME',
 
 
 def conv(input, scope, filter_dims, stride_dims, padding='SAME',
-         non_linear_fn=tf.nn.relu, dilation=[1, 1, 1, 1], bias=False, sn=False):
+         non_linear_fn=tf.nn.relu, dilation=[1, 1, 1, 1], bias=True, sn=False):
     input_dims = input.get_shape().as_list()
 
     assert (len(input_dims) == 4)  # batch_size, height, width, num_channels_in
@@ -199,7 +205,55 @@ def conv(input, scope, filter_dims, stride_dims, padding='SAME',
         return activation
 
 
-def batch_norm_conv(x, b_train, scope, decay=0.999, epsilon=1e-3):
+def blur_pooling2d(input, kernel_size=3, scope='blur_pooling', padding='SAME'):
+    input_dims = input.get_shape().as_list()
+    num_channels_in = input_dims[-1]
+
+    kernel_w = kernel_size
+    kernel_h = kernel_size
+
+    if kernel_size == 5:
+        # Laplacian
+        kernel = np.array([[1, 4, 6, 4, 1],
+                           [4, 16, 24, 16, 4],
+                           [6, 24, 36, 24, 6],
+                           [4, 16, 24, 16, 4],
+                           [1, 4, 6, 4, 1]]).astype('float32')
+    elif kernel_size == 3:
+        # Bilinear
+        kernel = np.array([[1., 2., 1.], [2., 4., 2.], [1., 2., 1.]]).astype('float32')
+    else:
+        # 2. Nearest Neighbour
+        kernel = np.array([[1., 1.], [1., 1.]]).astype('float32')
+
+    kernel = kernel / np.sum(kernel)
+
+    with tf.variable_scope(scope):
+        '''
+        tf.nn.depthwise_conv2d(input,
+                     filter,
+                     strides,
+                     padding,
+                     rate=None,
+                     name=None,
+                     data_format=None,
+                     dilations=None)
+        '''
+        kernel = np.repeat(kernel, num_channels_in)
+        kernel = np.reshape(kernel, (kernel_h, kernel_w, num_channels_in, 1))
+
+        filter_init = tf.constant_initializer(kernel)
+        filter_weight = tf.get_variable('blur_kernel',
+                                        shape=[kernel_h, kernel_w, num_channels_in, 1],
+                                        initializer=filter_init,
+                                        trainable=False)
+
+        map = tf.nn.depthwise_conv2d(input, filter=filter_weight, strides=[1, 2, 2, 1], padding=padding)
+
+        return map
+
+
+def batch_norm_conv(x, b_train, scope):
     with tf.variable_scope(scope):
         n_out = x.get_shape().as_list()[-1]
 
@@ -207,7 +261,7 @@ def batch_norm_conv(x, b_train, scope, decay=0.999, epsilon=1e-3):
         gamma = tf.get_variable('gamma', initializer=tf.constant(1.0, shape=[n_out]))
 
         batch_mean, batch_var = tf.nn.moments(x, [0, 1, 2], name='moments')
-        ema = tf.train.ExponentialMovingAverage(decay=decay)
+        ema = tf.train.ExponentialMovingAverage(decay=0.9)
 
         def mean_var_with_update():
             ema_apply_op = ema.apply([batch_mean, batch_var])
@@ -217,13 +271,13 @@ def batch_norm_conv(x, b_train, scope, decay=0.999, epsilon=1e-3):
         mean, var = tf.cond(b_train,
                             mean_var_with_update,
                             lambda: (ema.average(batch_mean), ema.average(batch_var)))
-        normed = tf.nn.batch_normalization(x, mean, var, beta, gamma, epsilon)
+        normed = tf.nn.batch_normalization(x, mean, var, beta, gamma, 1e-3)
 
         return normed
 
 
 def add_dense_layer(layer, filter_dims, act_func=tf.nn.relu, scope='dense_layer', norm='layer',
-                    b_train=False, use_bias=False, dilation=[1, 1, 1, 1], sn=False):
+                    b_train=False, use_bias=True, dilation=[1, 1, 1, 1], sn=False):
     with tf.variable_scope(scope):
         l = layer
         l = conv_normalize(l, norm=norm, b_train=b_train, scope='norm')
@@ -236,7 +290,7 @@ def add_dense_layer(layer, filter_dims, act_func=tf.nn.relu, scope='dense_layer'
 
 
 def add_residual_layer(layer, filter_dims, act_func=tf.nn.relu, scope='residual_layer',
-                       norm='layer', b_train=False, use_bias=False, dilation=[1, 1, 1, 1], sn=False):
+                       norm='layer', b_train=False, use_bias=True, dilation=[1, 1, 1, 1], sn=False):
     with tf.variable_scope(scope):
         l = layer
         l = conv(l, scope='conv', filter_dims=filter_dims, stride_dims=[1, 1],
@@ -250,7 +304,7 @@ def add_residual_layer(layer, filter_dims, act_func=tf.nn.relu, scope='residual_
 
 
 def add_dense_transition_layer(layer, filter_dims, stride_dims=[1, 1], act_func=tf.nn.relu, scope='transition',
-                               norm='layer', b_train=False, use_pool=True, use_bias=False, sn=False):
+                               norm='layer', b_train=False, use_pool=True, use_bias=True, sn=False):
     with tf.variable_scope(scope):
         l = layer
         l = conv_normalize(l, norm=norm, b_train=b_train, scope='norm')
@@ -264,7 +318,7 @@ def add_dense_transition_layer(layer, filter_dims, stride_dims=[1, 1], act_func=
     return l
 
 
-def global_avg_pool(input_data, output_length=1, padding='VALID', use_bias=False, scope='gloval_avg_pool'):
+def global_avg_pool(input_data, output_length=1, padding='VALID', use_bias=True, scope='gloval_avg_pool'):
     input_dims = input_data.get_shape().as_list()
 
     assert (len(input_dims) == 4)  # batch_size, height, width, num_channels_in
@@ -481,7 +535,7 @@ def layer_norm(x, scope="layer_norm", alpha_start=1.0, bias_start=0.0):
     return y
 
 
-def instance_norm(x, scope="instance_norm", alpha_start=1.0, bias_start=0.0, num_grp=8):
+def instance_norm(x, scope="instance_norm", alpha_start=1.0, bias_start=0.0, num_grp=4):
     with tf.variable_scope(scope):
         input_dims = x.get_shape().as_list()
         h = input_dims[1]
@@ -516,11 +570,11 @@ def add_residual_dense_block(in_layer, filter_dims, num_layers, act_func=tf.nn.r
         if use_dilation == True:
             dilation = [1, 2, 2, 1]
 
-        bn_depth = num_channel_in // (num_layers * 2)
-        #bn_depth = bottleneck_depth
+        #bn_depth = num_channel_in // (num_layers * 2)
+        bn_depth = num_channel_in
 
         l = conv(l, scope='bt_conv', filter_dims=[1, 1, bn_depth], stride_dims=[1, 1], dilation=[1, 1, 1, 1],
-                    non_linear_fn=None, bias=False, sn=False)
+                    non_linear_fn=None, sn=False)
 
         for i in range(num_layers):
             l = add_dense_layer(l, filter_dims=[filter_dims[0], filter_dims[1], bn_depth], act_func=act_func, norm=norm, b_train=b_train,
@@ -566,7 +620,7 @@ def add_se_residual_block(in_layer, filter_dims, num_layers=2, act_func=tf.nn.re
             bn_depth = num_channel_out // (num_layers * 2)
             l = conv(l, scope='bt_conv1', filter_dims=[1, 1, bn_depth], stride_dims=[1, 1],
                      dilation=dilation,
-                     non_linear_fn=None, bias=False, sn=False)
+                     non_linear_fn=None, sn=False)
             l = conv_normalize(l, norm=norm, b_train=b_train, scope='bt_norm1')
             l = act_func(l)
         else:
@@ -580,14 +634,14 @@ def add_se_residual_block(in_layer, filter_dims, num_layers=2, act_func=tf.nn.re
             l = act_func(l)
             l = conv(l, scope='bt_conv2', filter_dims=[1, 1, num_channel_out], stride_dims=[1, 1],
                      dilation=dilation,
-                     non_linear_fn=None, bias=False, sn=False)
+                     non_linear_fn=None, sn=False)
             l = conv_normalize(l, norm=norm, b_train=b_train, scope='bt_norm2')
 
         # SE Path
         # Squeeze
         sl = global_avg_pool(l, output_length=num_channel_out, scope='squeeze')
         sl = fc(sl, out_dim=num_channel_out // 8, non_linear_fn=tf.nn.leaky_relu, scope='reduction')
-        sl = fc(sl, out_dim=num_channel_out,  non_linear_fn=tf.nn.tanh, scope='transform')
+        sl = fc(sl, out_dim=num_channel_out,  non_linear_fn=tf.nn.sigmoid, scope='transform')
         # Excitation
         sl = tf.expand_dims(sl, axis=1)
         sl = tf.expand_dims(sl, axis=2)
@@ -619,7 +673,7 @@ def add_residual_block(in_layer, filter_dims, num_layers=2, act_func=tf.nn.relu,
             bn_depth = num_channel_out // (num_layers * 2)
             l = conv(l, scope='bt_conv1', filter_dims=[1, 1, bn_depth], stride_dims=[1, 1],
                      dilation=[1, 1, 1, 1],
-                     non_linear_fn=None, bias=False, sn=False)
+                     non_linear_fn=None, sn=False)
             l = conv_normalize(l, norm=norm, b_train=b_train, scope='bt_norm1')
             l = act_func(l)
         else:
@@ -646,7 +700,7 @@ def add_residual_block(in_layer, filter_dims, num_layers=2, act_func=tf.nn.relu,
             l = act_func(l)
             l = conv(l, scope='bt_conv2', filter_dims=[1, 1, num_channel_out], stride_dims=[1, 1],
                      dilation=[1, 1, 1, 1],
-                     non_linear_fn=None, bias=False, sn=False)
+                     non_linear_fn=None, sn=False)
             l = conv_normalize(l, norm=norm, b_train=b_train, scope='bt_norm2')
 
         if use_residual is True:
@@ -668,3 +722,138 @@ def conv_normalize(input, norm='layer', b_train=True, scope='conv_norm'):
             l = instance_norm(l, scope=scope)
 
     return l
+
+
+class ConvLSTMCell(tf.nn.rnn_cell.RNNCell):
+  """A LSTM cell with convolutions instead of multiplications.
+  Reference:
+    Xingjian, S. H. I., et al. "Convolutional LSTM network: A machine learning approach for precipitation nowcasting." Advances in Neural Information Processing Systems. 2015.
+  """
+
+  def __init__(self, shape, filters, kernel, forget_bias=1.0, activation=tf.tanh, normalize=True, peephole=True, data_format='channels_last', reuse=None):
+    super(ConvLSTMCell, self).__init__(_reuse=reuse)
+    self._kernel = kernel
+    self._filters = filters
+    self._forget_bias = forget_bias
+    self._activation = activation
+    self._normalize = normalize
+    self._peephole = peephole
+    if data_format == 'channels_last':
+        self._size = tf.TensorShape(shape + [self._filters])
+        self._feature_axis = self._size.ndims
+        self._data_format = None
+    elif data_format == 'channels_first':
+        self._size = tf.TensorShape([self._filters] + shape)
+        self._feature_axis = 0
+        self._data_format = 'NC'
+    else:
+        raise ValueError('Unknown data_format')
+
+  @property
+  def state_size(self):
+    return tf.nn.rnn_cell.LSTMStateTuple(self._size, self._size)
+
+  @property
+  def output_size(self):
+    return self._size
+
+  def call(self, x, state):
+    c, h = state
+
+    x = tf.concat([x, h], axis=self._feature_axis)
+    n = x.shape[-1].value
+    m = 4 * self._filters if self._filters > 1 else 4
+    W = tf.get_variable('kernel', self._kernel + [n, m])
+    y = tf.nn.convolution(x, W, 'SAME', data_format=self._data_format)
+    if not self._normalize:
+      y += tf.get_variable('bias', [m], initializer=tf.zeros_initializer())
+    j, i, f, o = tf.split(y, 4, axis=self._feature_axis)
+
+    if self._peephole:
+      i += tf.get_variable('W_ci', c.shape[1:]) * c
+      f += tf.get_variable('W_cf', c.shape[1:]) * c
+
+    if self._normalize:
+      j = tf.contrib.layers.layer_norm(j)
+      i = tf.contrib.layers.layer_norm(i)
+      f = tf.contrib.layers.layer_norm(f)
+
+    f = tf.sigmoid(f + self._forget_bias)
+    i = tf.sigmoid(i)
+    c = c * f + i * self._activation(j)
+
+    if self._peephole:
+      o += tf.get_variable('W_co', c.shape[1:]) * c
+
+    if self._normalize:
+      o = tf.contrib.layers.layer_norm(o)
+      c = tf.contrib.layers.layer_norm(c)
+
+    o = tf.sigmoid(o)
+    h = o * self._activation(c)
+
+    state = tf.nn.rnn_cell.LSTMStateTuple(c, h)
+
+    return h, state
+
+
+class ConvGRUCell(tf.nn.rnn_cell.RNNCell):
+    """A GRU cell with convolutions instead of multiplications."""
+    def __init__(self, shape, filters, kernel, activation=tf.tanh, normalize=True, data_format='channels_last', reuse=None):
+        super(ConvGRUCell, self).__init__(_reuse=reuse)
+        self._filters = filters
+        self._kernel = kernel
+        self._activation = activation
+        self._normalize = normalize
+        if data_format == 'channels_last':
+            self._size = tf.TensorShape(shape + [self._filters])
+            self._feature_axis = self._size.ndims
+            self._data_format = None
+        elif data_format == 'channels_first':
+            self._size = tf.TensorShape([self._filters] + shape)
+            self._feature_axis = 0
+            self._data_format = 'NC'
+        else:
+            raise ValueError('Unknown data_format')
+
+    @property
+    def state_size(self):
+        return self._size
+
+    @property
+    def output_size(self):
+        return self._size
+
+    def call(self, x, h):
+        channels = x.shape[self._feature_axis].value
+
+        with tf.variable_scope('gates'):
+            inputs = tf.concat([x, h], axis=self._feature_axis)
+            n = channels + self._filters
+            m = 2 * self._filters if self._filters > 1 else 2
+            W = tf.get_variable('kernel', self._kernel + [n, m])
+            y = tf.nn.convolution(inputs, W, 'SAME', data_format=self._data_format)
+            if self._normalize:
+                r, u = tf.split(y, 2, axis=self._feature_axis)
+                r = tf.contrib.layers.layer_norm(r)
+                u = tf.contrib.layers.layer_norm(u)
+
+            else:
+                y += tf.get_variable('bias', [m], initializer=tf.ones_initializer())
+                r, u = tf.split(y, 2, axis=self._feature_axis)
+            r, u = tf.sigmoid(r), tf.sigmoid(u)
+
+        with tf.variable_scope('candidate'):
+          inputs = tf.concat([x, r * h], axis=self._feature_axis)
+          n = channels + self._filters
+          m = self._filters
+          W = tf.get_variable('kernel', self._kernel + [n, m])
+          y = tf.nn.convolution(inputs, W, 'SAME', data_format=self._data_format)
+          if self._normalize:
+              #y = tf.contrib.layers.layer_norm(y)
+              y = instance_norm(y)
+          else:
+              y += tf.get_variable('bias', [m], initializer=tf.zeros_initializer())
+          h = u * h + (1 - u) * self._activation(y)
+
+        return h, h
